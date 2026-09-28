@@ -1,0 +1,7 @@
+{
+  "title": "VPN connections dropping in staging",
+  "description": "Engineers on the staging VPN lose connection every ~10 minutes. Gateway 10.20.4.17 shows intermittent DNS timeouts.",
+  "service": "vpn-gateway",
+  "environment": "staging",
+  "reporter": "ravi.net"
+}

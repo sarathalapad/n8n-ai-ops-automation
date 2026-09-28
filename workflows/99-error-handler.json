@@ -1,0 +1,166 @@
+{
+  "name": "Ops 99 - Error handler",
+  "nodes": [
+    {
+      "id": "7701b87c-8399-5979-b359-91ed8f0af3a0",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "ee5fa6da-bb85-59e8-bddb-05c295150f2d",
+      "name": "Build Failure Record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e71c6eca-18f7-5498-9527-61b2c82550ac",
+              "name": "workflow_name",
+              "value": "={{ $json.workflow.name }}",
+              "type": "string"
+            },
+            {
+              "id": "5235376f-8b05-562d-b394-2200a8a04461",
+              "name": "execution_id",
+              "value": "={{ $json.execution.id }}",
+              "type": "string"
+            },
+            {
+              "id": "836143e7-cebc-5234-8996-9e350b1ec01b",
+              "name": "failed_node",
+              "value": "={{ $json.execution.lastNodeExecuted }}",
+              "type": "string"
+            },
+            {
+              "id": "eb077091-5878-5770-995f-748dbe13be5f",
+              "name": "error_message",
+              "value": "={{ ($json.execution.error?.message || 'unknown error').slice(0, 500) }}",
+              "type": "string"
+            },
+            {
+              "id": "7289a279-6a87-5038-aa44-5b53c74d9f6d",
+              "name": "execution_url",
+              "value": "={{ $json.execution.url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "11ffd085-9638-5b5e-b786-a0ac29dd4c91",
+      "name": "Audit Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'error-handler', event_type: 'workflow.failed', actor: 'n8n', details: { workflow_name: $json.workflow_name, execution_id: $json.execution_id, failed_node: $json.failed_node, error_message: $json.error_message } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3c66f4d8-5909-5929-a8cd-afaebdac11cf",
+      "name": "Alert Ops Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Workflow failed: ' + $('Build Failure Record').item.json.workflow_name + ' at node ' + $('Build Failure Record').item.json.failed_node + ': ' + $('Build Failure Record').item.json.error_message + ' (' + $('Build Failure Record').item.json.execution_url + ')' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Build Failure Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Failure Record": {
+      "main": [
+        [
+          {
+            "node": "Audit Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Failure": {
+      "main": [
+        [
+          {
+            "node": "Alert Ops Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "ai-ops"
+    },
+    {
+      "name": "error-handling"
+    }
+  ]
+}

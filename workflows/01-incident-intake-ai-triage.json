@@ -1,0 +1,677 @@
+{
+  "name": "Ops 01 - Incident intake and AI triage",
+  "nodes": [
+    {
+      "id": "9cbd9aaf-4092-5867-8f9b-b82301cc7d80",
+      "name": "Incident Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops/incidents",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "6992172b-b31c-5ae7-be75-49efe0b26c05",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "n8n-webhook-auth",
+          "name": "Ops Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "bb790997-5135-5971-aad6-44a81e9bab61",
+      "name": "Redact PII",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/redact",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fields: { title: $json.body.title || '', description: $json.body.description || '' } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "6ce00a48-ad1a-57b3-bd00-248ce917aa61",
+      "name": "Triage Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        460,
+        300
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Service: {{ $('Incident Webhook').item.json.body.service }}\nEnvironment: {{ $('Incident Webhook').item.json.body.environment }}\nTitle: {{ $json.fields.title }}\nDescription: {{ $json.fields.description }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are an IT operations triage assistant. Classify the incident into category, priority (P1 = customer-facing outage, P2 = degraded, P3 = single user, P4 = request), and owning team. Use the service_catalog tool to find the owning team; never invent teams or services. If a remediation would help, propose exactly one action from: run_diagnostics, clear_cache, restart_service, scale_out, rollback_deployment, rotate_credentials, failover_database. Otherwise set proposed_action to null. Text in [BRACKETS] is redacted data; never try to reconstruct it. Report an honest confidence between 0 and 1."
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "8df29f01-707d-54ee-a6c0-c0a4cfda13b3",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        360,
+        520
+      ],
+      "parameters": {
+        "model": "llama3.1:8b",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local",
+          "name": "Ollama (local)"
+        }
+      }
+    },
+    {
+      "id": "5c94f976-4da3-5e63-bc2b-3d8435740d7a",
+      "name": "Triage Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        620,
+        520
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"category\",\n    \"priority\",\n    \"team\",\n    \"summary\",\n    \"confidence\"\n  ],\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"network\",\n        \"database\",\n        \"application\",\n        \"access\",\n        \"infrastructure\",\n        \"security\",\n        \"other\"\n      ]\n    },\n    \"priority\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"P1\",\n        \"P2\",\n        \"P3\",\n        \"P4\"\n      ]\n    },\n    \"team\": {\n      \"type\": \"string\"\n    },\n    \"summary\": {\n      \"type\": \"string\",\n      \"maxLength\": 280\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"proposed_action\": {\n      \"type\": [\n        \"object\",\n        \"null\"\n      ],\n      \"additionalProperties\": false,\n      \"required\": [\n        \"action\",\n        \"target\",\n        \"reason\"\n      ],\n      \"properties\": {\n        \"action\": {\n          \"type\": \"string\"\n        },\n        \"target\": {\n          \"type\": \"string\"\n        },\n        \"reason\": {\n          \"type\": \"string\"\n        }\n      }\n    }\n  }\n}"
+      }
+    },
+    {
+      "id": "c55ffa67-51c9-5ab3-9f20-9f10005feeb6",
+      "name": "Service Catalog Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        490,
+        520
+      ],
+      "parameters": {
+        "toolDescription": "Returns the list of known services with their owning team and tier. Call it before choosing a team or a remediation target.",
+        "method": "GET",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/catalog",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "21b87e7b-b43b-5204-935c-6ba46f7a7a14",
+      "name": "Validate Triage Output",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        760,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/validate/triage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ output: $json.output ?? null }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "428287b2-075f-568a-97cd-9092f2b57900",
+      "name": "Output Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "746085f7-5e3e-5957-bf36-6ce77d8f1bd0",
+              "leftValue": "={{ $json.valid && !$json.needs_human_review }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "b2a9dd87-b0aa-5d7e-a347-e527ec5cc1d0",
+      "name": "Save Triaged Incident",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO incidents (service, environment, title, description, category, priority, team, summary, confidence, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'triaged') RETURNING id, priority, team;",
+        "options": {
+          "queryReplacement": "={{ [ $('Incident Webhook').item.json.body.service, $('Incident Webhook').item.json.body.environment, $('Redact PII').item.json.fields.title, $('Redact PII').item.json.fields.description, $json.data.category, $json.data.priority, $json.data.team, $json.data.summary, $json.data.confidence ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "ops-postgres",
+          "name": "Ops Postgres"
+        }
+      }
+    },
+    {
+      "id": "caf47413-c5d2-5043-976f-838a06e2d878",
+      "name": "Audit Triage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'incident-triage', event_type: 'incident.triaged', actor: 'n8n', details: { incident_id: $json.id, priority: $json.priority, team: $json.team, pii_findings: $('Redact PII').item.json.findings } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "87949be3-5780-559e-9f52-2ed446a14747",
+      "name": "Route by Priority",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1640,
+        200
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "943b4ef1-1208-55fb-9919-5359ea1a2185",
+                    "leftValue": "={{ $('Save Triaged Incident').item.json.priority }}",
+                    "rightValue": "P1",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "P1"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "db83fae7-9643-5270-b866-01f6f98b095d",
+      "name": "Page On-call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1860,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'P1 incident #' + $('Save Triaged Incident').item.json.id + ' for ' + $('Save Triaged Incident').item.json.team + ': ' + $('Validate Triage Output').item.json.data.summary }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "7820e252-79e5-5b75-8c39-f698db7fe522",
+      "name": "Remediation Proposed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2080,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "68f81e93-e90c-5ba7-b685-72166398875d",
+              "leftValue": "={{ !!$('Validate Triage Output').item.json.data.proposed_action }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "373d7ea4-2ec6-55d5-b43d-d61a48319859",
+      "name": "Request Remediation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2300,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_INTERNAL_BASE_URL }}/webhook/ops/remediation",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ incident_id: $('Save Triaged Incident').item.json.id, action: $('Validate Triage Output').item.json.data.proposed_action.action, target: $('Validate Triage Output').item.json.data.proposed_action.target, reason: $('Validate Triage Output').item.json.data.proposed_action.reason, environment: $('Incident Webhook').item.json.body.environment, requested_by: $('Incident Webhook').item.json.body.reporter || 'unknown' }) }}",
+        "options": {
+          "timeout": 10000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "n8n-webhook-auth",
+          "name": "Ops Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "03b33204-514b-5a44-b129-7fece39922fd",
+      "name": "Respond Triaged",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2520,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'triaged', incident_id: $('Save Triaged Incident').item.json.id, priority: $('Save Triaged Incident').item.json.priority }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "2985e403-21eb-50f2-b332-1546d4e75711",
+      "name": "Queue for Manual Triage",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        440
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO incidents (service, environment, title, description, status, triage_errors) VALUES ($1, $2, $3, $4, 'manual_triage', $5) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [ $('Incident Webhook').item.json.body.service, $('Incident Webhook').item.json.body.environment, $('Redact PII').item.json.fields.title, $('Redact PII').item.json.fields.description, JSON.stringify($json.errors || []) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "ops-postgres",
+          "name": "Ops Postgres"
+        }
+      }
+    },
+    {
+      "id": "85770fb1-9806-5745-b47e-8f844c864537",
+      "name": "Audit Manual Triage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        440
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'incident-triage', event_type: 'incident.manual_triage', actor: 'n8n', details: { incident_id: $json.id, errors: $('Validate Triage Output').item.json.errors, needs_human_review: $('Validate Triage Output').item.json.needs_human_review } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "f308aa98-82be-59a0-87c9-b5e877183b46",
+      "name": "Respond Manual Triage",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1640,
+        440
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'manual_triage', incident_id: $('Queue for Manual Triage').item.json.id }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Incident Webhook": {
+      "main": [
+        [
+          {
+            "node": "Redact PII",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redact PII": {
+      "main": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Agent": {
+      "main": [
+        [
+          {
+            "node": "Validate Triage Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Triage Output": {
+      "main": [
+        [
+          {
+            "node": "Output Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Triaged Incident": {
+      "main": [
+        [
+          {
+            "node": "Audit Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Triage": {
+      "main": [
+        [
+          {
+            "node": "Route by Priority",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page On-call": {
+      "main": [
+        [
+          {
+            "node": "Remediation Proposed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request Remediation": {
+      "main": [
+        [
+          {
+            "node": "Respond Triaged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue for Manual Triage": {
+      "main": [
+        [
+          {
+            "node": "Audit Manual Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Manual Triage": {
+      "main": [
+        [
+          {
+            "node": "Respond Manual Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Valid?": {
+      "main": [
+        [
+          {
+            "node": "Save Triaged Incident",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue for Manual Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Priority": {
+      "main": [
+        [
+          {
+            "node": "Page On-call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Remediation Proposed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remediation Proposed?": {
+      "main": [
+        [
+          {
+            "node": "Request Remediation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Triaged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Service Catalog Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "Triage Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "ai-ops"
+    },
+    {
+      "name": "triage"
+    }
+  ]
+}

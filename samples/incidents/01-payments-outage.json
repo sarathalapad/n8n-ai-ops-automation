@@ -1,0 +1,7 @@
+{
+  "title": "Checkout failing with 502 for all customers",
+  "description": "Since 09:05 every checkout returns 502 from payments-api. Customer jane.doe@example.com called from +44 20 7946 0958 and says card 4111 1111 1111 1111 was charged twice.",
+  "service": "payments-api",
+  "environment": "production",
+  "reporter": "alice.ops"
+}

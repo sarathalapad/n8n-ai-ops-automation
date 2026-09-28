@@ -1,0 +1,7 @@
+{
+  "title": "Orders DB primary unresponsive",
+  "description": "Primary orders-db node stopped accepting connections; replicas are healthy. Order placement is down.",
+  "service": "orders-db",
+  "environment": "production",
+  "reporter": "dan.dba"
+}

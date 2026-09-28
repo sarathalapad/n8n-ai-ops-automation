@@ -1,0 +1,745 @@
+{
+  "name": "Ops 02 - Remediation with human approval",
+  "nodes": [
+    {
+      "id": "72bacafb-d5fb-524d-ad53-6abb872ba357",
+      "name": "Remediation Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops/remediation",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "webhookId": "bf2ee210-f636-50ae-882f-af8aaa7a76e6",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "n8n-webhook-auth",
+          "name": "Ops Webhook Auth"
+        }
+      }
+    },
+    {
+      "id": "385c919f-bb81-5748-8c4a-b22c2a223725",
+      "name": "Evaluate Policy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/policy/evaluate",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: $json.body.action, target: $json.body.target, environment: $json.body.environment || 'production', requested_by: $json.body.requested_by || '' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "ebef1bb0-88a7-572d-ab1d-0e31b133a677",
+      "name": "Audit Policy Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'remediation', event_type: 'policy.evaluated', actor: 'n8n', details: { request: $('Remediation Request').item.json.body, decision: $json } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "9f237a63-3679-5bae-97e7-1d97d98cdedc",
+      "name": "Route by Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "7968ff51-e540-55be-ab94-52ec2b7839b3",
+                    "leftValue": "={{ $('Evaluate Policy').item.json.decision }}",
+                    "rightValue": "auto_approved",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "auto_approved"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "1dfa1cf5-f52c-5413-9f71-f946a49a63cd",
+                    "leftValue": "={{ $('Evaluate Policy').item.json.decision }}",
+                    "rightValue": "approval_required",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approval_required"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d92bf824-6205-5bc8-9f2f-1062184a5ef5",
+                    "leftValue": "={{ $('Evaluate Policy').item.json.decision }}",
+                    "rightValue": "denied",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "denied"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "288d92b3-62db-55c3-8096-0388afde2801",
+      "name": "Send Approval Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Approval needed: ' + $('Remediation Request').item.json.body.action + ' on ' + $('Remediation Request').item.json.body.target + ' (' + $('Remediation Request').item.json.body.environment + ') requested by ' + $('Remediation Request').item.json.body.requested_by + '. Reason: ' + $('Remediation Request').item.json.body.reason + '. Risk: ' + $('Evaluate Policy').item.json.risk + '. Respond within ' + $('Evaluate Policy').item.json.timeout_minutes + ' min: POST ' + $execution.resumeUrl + ' with {\"decision\": \"approve|reject\", \"approver\": \"<you>\"}' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "4a4e69f0-3e55-5078-8196-5231a5ccd207",
+      "name": "Wait for Approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": "={{ $('Evaluate Policy').item.json.timeout_minutes }}",
+        "resumeUnit": "minutes",
+        "options": {}
+      },
+      "webhookId": "d1664e07-5d73-54a5-ad00-a7ba936f7118"
+    },
+    {
+      "id": "1845348d-0541-5926-b677-306eba83af70",
+      "name": "Approval Received?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9ab68015-c123-5c5a-b54a-93a66d0657d2",
+              "leftValue": "={{ !!$json.body?.decision }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0fed9535-7eef-5a98-81bf-32c94781fa07",
+      "name": "Verify Approver",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/approvals/verify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requested_by: $('Remediation Request').item.json.body.requested_by || '', approver: $json.body.approver || '', decision: $json.body.decision || '' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "73a27f6b-9b45-55a7-8095-b54b4b558863",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1760,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4451be68-34eb-57b9-8f14-2693249428ee",
+              "leftValue": "={{ $json.approved }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d6cd39b6-e195-5498-91d2-783678adfddb",
+      "name": "Remediate: Execute Runbook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RUNBOOK_API_URL }}/remediate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: $('Remediation Request').item.json.body.action, target: $('Remediation Request').item.json.body.target, environment: $('Remediation Request').item.json.body.environment, incident_id: $('Remediation Request').item.json.body.incident_id }) }}",
+        "options": {
+          "timeout": 10000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "runbook-api",
+          "name": "Runbook API Token"
+        }
+      }
+    },
+    {
+      "id": "7d7b0e64-2212-5809-b144-7ab79f088036",
+      "name": "Audit Execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'remediation', event_type: 'remediation.executed', actor: 'n8n', details: { request: $('Remediation Request').item.json.body, approver: $('Verify Approver').isExecuted ? $('Wait for Approval').item.json.body.approver : 'policy:auto', result_status: $json.status ?? 'submitted' } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "311dfc8e-4744-5d9a-b7fe-36eeacbf6fea",
+      "name": "Notify Executed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Remediation ' + $('Remediation Request').item.json.body.action + ' on ' + $('Remediation Request').item.json.body.target + ' submitted to the runbook engine.' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "860b4d85-dca8-52c3-a0e0-d7e380b3ce23",
+      "name": "Audit Rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        320
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'remediation', event_type: 'remediation.rejected', actor: 'n8n', details: { request: $('Remediation Request').item.json.body, reason: $json.reason, approver: $('Wait for Approval').item.json.body.approver } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "cc428621-c1c7-585f-80a7-25fd021dfac8",
+      "name": "Notify Rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        320
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Remediation ' + $('Remediation Request').item.json.body.action + ' on ' + $('Remediation Request').item.json.body.target + ' NOT executed: ' + $('Verify Approver').item.json.reason }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "647dd151-f06c-5be0-a926-237a8b7cc9d8",
+      "name": "Audit Timeout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        440
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'remediation', event_type: 'approval.timeout', actor: 'n8n', details: { request: $('Remediation Request').item.json.body, timeout_minutes: $('Evaluate Policy').item.json.timeout_minutes } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "186efd57-0297-54a3-8ecd-ac08504dd5f3",
+      "name": "Escalate Timeout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        440
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'ESCALATION: no approval received for ' + $('Remediation Request').item.json.body.action + ' on ' + $('Remediation Request').item.json.body.target + '. Paging the duty manager; nothing was executed.' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "d16a468c-9dc6-55ae-8f36-d7f7a349e516",
+      "name": "Audit Denied",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        520
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'remediation', event_type: 'remediation.denied', actor: 'n8n', details: { request: $('Remediation Request').item.json.body, reason: $('Evaluate Policy').item.json.reason } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "c93a67fd-cb18-5db1-9e1f-b588488e5e60",
+      "name": "Notify Denied",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        520
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Remediation ' + $('Remediation Request').item.json.body.action + ' on ' + $('Remediation Request').item.json.body.target + ' denied by policy: ' + $('Evaluate Policy').item.json.reason }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Remediation Request": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Policy": {
+      "main": [
+        [
+          {
+            "node": "Audit Policy Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Policy Decision": {
+      "main": [
+        [
+          {
+            "node": "Route by Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Approval Request": {
+      "main": [
+        [
+          {
+            "node": "Wait for Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Approval": {
+      "main": [
+        [
+          {
+            "node": "Approval Received?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Approver": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remediate: Execute Runbook": {
+      "main": [
+        [
+          {
+            "node": "Audit Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Execution": {
+      "main": [
+        [
+          {
+            "node": "Notify Executed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Rejected": {
+      "main": [
+        [
+          {
+            "node": "Notify Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Timeout": {
+      "main": [
+        [
+          {
+            "node": "Escalate Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Denied": {
+      "main": [
+        [
+          {
+            "node": "Notify Denied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Decision": {
+      "main": [
+        [
+          {
+            "node": "Remediate: Execute Runbook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Approval Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Denied",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Denied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approval Received?": {
+      "main": [
+        [
+          {
+            "node": "Verify Approver",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Remediate: Execute Runbook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "ai-ops"
+    },
+    {
+      "name": "approval"
+    }
+  ]
+}

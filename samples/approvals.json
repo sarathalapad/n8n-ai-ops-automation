@@ -1,0 +1,6 @@
+{
+  "_comment": "Simulated approver replies for scripts/simulate.py, keyed by incident file stem. null = nobody answered before the Wait node timed out.",
+  "01-payments-outage": {"decision": "approve", "approver": "bob.sre-lead"},
+  "03-leaked-credentials": {"decision": "approve", "approver": "mei.sec"},
+  "06-db-primary-down": null
+}

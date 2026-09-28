@@ -1,0 +1,381 @@
+{
+  "name": "Ops 03 - Daily ops digest",
+  "nodes": [
+    {
+      "id": "e2d699a6-e327-57a6-be2a-7f16651d226a",
+      "name": "Every Weekday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d18af662-db53-5fdb-8fde-bce4c90c836b",
+      "name": "Fetch Last 24h Incidents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, service, category, priority, team, status, summary, created_at FROM incidents WHERE created_at >= now() - interval '24 hours' ORDER BY created_at;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "ops-postgres",
+          "name": "Ops Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "d1e40e3b-5511-5839-97e5-2770f1c6af48",
+      "name": "Aggregate Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Deterministic numbers are computed here, not by the model, so the digest\n// can never hallucinate counts. The LLM only writes the narrative.\nconst rows = $input.all().map(i => i.json).filter(r => r.id !== undefined);\nconst count = (key) => rows.reduce((acc, r) => {\n  const k = r[key] ?? 'unknown';\n  acc[k] = (acc[k] || 0) + 1;\n  return acc;\n}, {});\nreturn [{ json: {\n  total: rows.length,\n  by_priority: count('priority'),\n  by_team: count('team'),\n  manual_triage: rows.filter(r => r.status === 'manual_triage').length,\n  p1_summaries: rows.filter(r => r.priority === 'P1').map(r => `#${r.id} ${r.service}: ${r.summary}`).slice(0, 10),\n} }];\n"
+      }
+    },
+    {
+      "id": "4b3927b0-c500-5f99-9d04-02e77402cafd",
+      "name": "Summarise Digest",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Write the daily IT operations digest for the last 24 hours. Use ONLY these facts; do not invent incidents or numbers.\n\nStats: {{ JSON.stringify($json) }}",
+        "hasOutputParser": true
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "913a82df-e051-56db-b3c2-4b7fe380e4fe",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        620,
+        520
+      ],
+      "parameters": {
+        "model": "llama3.1:8b",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local",
+          "name": "Ollama (local)"
+        }
+      }
+    },
+    {
+      "id": "9ce942c6-373e-5bb8-9b72-ada5b8ad10a2",
+      "name": "Digest Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        520
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"headline\",\n    \"summary\"\n  ],\n  \"properties\": {\n    \"headline\": {\n      \"type\": \"string\",\n      \"maxLength\": 120\n    },\n    \"summary\": {\n      \"type\": \"string\",\n      \"maxLength\": 1200\n    },\n    \"highlights\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"maxItems\": 5\n    },\n    \"risk_callouts\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"string\"\n      },\n      \"maxItems\": 5\n    }\n  }\n}"
+      }
+    },
+    {
+      "id": "307c98d5-3db4-5c0e-89bb-118a42df1ca7",
+      "name": "Validate Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/validate/digest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ output: $json.output ?? null }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    },
+    {
+      "id": "73ba7bca-e070-5b15-8ceb-786a52c3775f",
+      "name": "Digest Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ebb04734-67c1-5e80-81a5-bb48da049164",
+              "leftValue": "={{ $json.valid }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "42fe6631-7bb7-5bb7-ba3c-91be0090781e",
+      "name": "Post AI Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '*' + $json.data.headline + '*\\n' + $json.data.summary + '\\n' + $json.data.highlights.map(h => '- ' + h).join('\\n') + '\\nIncidents: ' + $('Aggregate Stats').item.json.total }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "c0ce7943-3861-5e0c-be1e-299d3adeb8c8",
+      "name": "Post Stats-only Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPS_CHAT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Daily ops digest (AI summary unavailable). Incidents: ' + $('Aggregate Stats').item.json.total + ', by priority: ' + JSON.stringify($('Aggregate Stats').item.json.by_priority) + ', manual triage: ' + $('Aggregate Stats').item.json.manual_triage }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "7f038273-c048-5988-a79d-36efb4b16c22",
+      "name": "Audit Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OPSGUARD_BASE_URL }}/v1/audit",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'daily-digest', event_type: 'digest.posted', actor: 'n8n', details: { total: $('Aggregate Stats').item.json.total, ai_summary_used: $('Digest Valid?').isExecuted && $('Validate Digest').item.json.valid } }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "opsguard-token",
+          "name": "OpsGuard Helper Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Weekday 08:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch Last 24h Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Last 24h Incidents": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Stats": {
+      "main": [
+        [
+          {
+            "node": "Summarise Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarise Digest": {
+      "main": [
+        [
+          {
+            "node": "Validate Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Digest": {
+      "main": [
+        [
+          {
+            "node": "Digest Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post AI Digest": {
+      "main": [
+        [
+          {
+            "node": "Audit Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Stats-only Digest": {
+      "main": [
+        [
+          {
+            "node": "Audit Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Digest Valid?": {
+      "main": [
+        [
+          {
+            "node": "Post AI Digest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Stats-only Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarise Digest",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Digest Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Summarise Digest",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "ai-ops"
+    },
+    {
+      "name": "reporting"
+    }
+  ]
+}
